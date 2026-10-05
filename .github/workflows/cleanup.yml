@@ -1,0 +1,38 @@
+name: cleanup
+# أسبوعياً: يمسح ملفات jobs الأقدم من 14 يوم من main، ويعيد بناء فرع renders بدون الصور الأقدم من 60 يوم (عشان حجم الريبو ما يكبر).
+# أسماء المجلدات تبدأ بتوقيت YYYYMMDDHHMMSS فنقارنها كنص.
+on:
+  schedule:
+    - cron: '17 3 * * 0'
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prune old jobs on main
+        run: |
+          CUT=$(date -u -d '14 days ago' +%Y%m%d%H%M%S)
+          DEL=""
+          for f in jobs/*.json; do [ -e "$f" ] || continue; id=$(basename "$f" .json); [ "${id%%-*}" \< "$CUT" ] && DEL="$DEL $f"; done
+          if [ -n "$DEL" ]; then
+            git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git rm -q $DEL && git commit -q -m "prune old jobs" && git push -q origin HEAD:main
+          else echo "nothing to prune on main"; fi
+      - name: Rebuild renders branch without old images
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ github.token }}
+        run: |
+          URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          git clone --branch renders --single-branch "$URL" rr 2>/dev/null || { echo "no renders branch yet"; exit 0; }
+          cd rr
+          CUT=$(date -u -d '60 days ago' +%Y%m%d%H%M%S)
+          OLD=0
+          for d in out/*/; do [ -d "$d" ] || continue; id=$(basename "$d"); if [ "${id%%-*}" \< "$CUT" ]; then rm -rf "$d"; OLD=$((OLD+1)); fi; done
+          if [ "$OLD" -eq 0 ]; then echo "nothing old"; exit 0; fi
+          git config user.name "github-actions[bot]"; git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan fresh && git add -A && git commit -q -m "renders snapshot (pruned $OLD old)" && git push -q --force origin fresh:renders
