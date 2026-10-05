@@ -1,0 +1,8 @@
+{
+  "name": "carousel-renderer",
+  "private": true,
+  "description": "HTML slides to JPEG via headless Chrome, driven by GitHub Actions (free replacement for HCTI)",
+  "dependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}
