@@ -1,0 +1,53 @@
+name: render
+# n8n يرفع jobs/<id>.json على main ⇒ هذا الـ workflow يرندر الشرائح ويحط الصور على فرع renders (out/<id>/sNN.jpg + manifest.json)
+on:
+  push:
+    branches: [main]
+    paths: ['jobs/*.json']
+permissions:
+  contents: write
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install puppeteer-core
+        run: npm install --no-audit --no-fund --no-package-lock
+      - name: Emoji font
+        run: fc-list | grep -qi "noto color emoji" || (sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-color-emoji)
+      - name: Render new jobs and publish
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: |
+          set -u
+          if [ -z "$BEFORE" ] || echo "$BEFORE" | grep -Eq '^0+$'; then BEFORE=$(git rev-list --max-parents=0 "$AFTER" | tail -1); fi
+          JOBS=$(git diff --name-only --diff-filter=A "$BEFORE" "$AFTER" -- 'jobs/*.json' || true)
+          echo "jobs: $JOBS"
+          [ -n "$JOBS" ] || { echo "no new jobs"; exit 0; }
+          URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          git clone --branch renders --single-branch --depth 1 "$URL" rr 2>/dev/null || { mkdir rr && cd rr && git init -q -b renders && git remote add origin "$URL" && cd ..; }
+          for f in $JOBS; do
+            id=$(basename "$f" .json)
+            node render.js "$f" "rr/out/$id" || echo "render failed for $id (manifest tells why)"
+            [ -f "rr/out/$id/manifest.json" ] || { mkdir -p "rr/out/$id"; echo "{\"id\":\"$id\",\"ok\":false,\"files\":[],\"errors\":[\"render crashed\"]}" > "rr/out/$id/manifest.json"; }
+          done
+          cd rr
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A out
+          git commit -q -m "render $(echo $JOBS | tr '\n' ' ')" || { echo "nothing to commit"; exit 0; }
+          for i in 1 2 3 4 5 6; do
+            git push -q origin renders && exit 0
+            git pull -q --rebase origin renders || true
+            sleep $((RANDOM % 5 + 2))
+          done
+          echo "push failed"; exit 1
